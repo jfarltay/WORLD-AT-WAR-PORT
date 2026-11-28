@@ -1,5 +1,5 @@
 
-name: WORLD AT WAR PORT 0.8.0 CINEMATIC
+name: WORLD AT WAR PORT 1.0.0 - Android APK
 
 on:
   workflow_dispatch:
@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   build:
-    name: Extract and Build Android APK
+    name: Build WORLD AT WAR PORT
     runs-on: ubuntu-22.04
     timeout-minutes: 45
 
@@ -39,20 +39,16 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Locate and extract project ZIP
+      - name: Find and extract project ZIP
         shell: bash
         run: |
           set -euo pipefail
 
           mkdir -p "$GITHUB_WORKSPACE/extracted"
 
-          ZIP_FILE="$(find "$GITHUB_WORKSPACE" \
-            -maxdepth 3 \
-            -type f \
-            -iname 'WORLD-AT-WAR-PORT-0.8.0-CINEMATIC.zip' \
-            -print -quit)"
+          ZIP_FILE="$GITHUB_WORKSPACE/WORLD-AT-WAR-PORT-1.0.0.zip"
 
-          if [ -z "$ZIP_FILE" ]; then
+          if [ ! -f "$ZIP_FILE" ]; then
             ZIP_FILE="$(find "$GITHUB_WORKSPACE" \
               -maxdepth 3 \
               -type f \
@@ -60,12 +56,12 @@ jobs:
               -print -quit)"
           fi
 
-          if [ -z "$ZIP_FILE" ]; then
+          if [ -z "${ZIP_FILE:-}" ] || [ ! -f "$ZIP_FILE" ]; then
             echo "ERROR: Project ZIP not found."
             exit 1
           fi
 
-          echo "Archive: $ZIP_FILE"
+          echo "Extracting: $ZIP_FILE"
           unzip -q "$ZIP_FILE" -d "$GITHUB_WORKSPACE/extracted"
 
           SETTINGS_FILE="$(find "$GITHUB_WORKSPACE/extracted" \
@@ -82,9 +78,9 @@ jobs:
           PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Project found: $PROJECT_DIR"
+          echo "Project directory: $PROJECT_DIR"
 
-      - name: Configure Android SDK
+      - name: Locate Android SDK Manager
         shell: bash
         run: |
           set -euo pipefail
@@ -92,7 +88,7 @@ jobs:
           SDK="$ANDROID_HOME"
 
           if [ ! -d "$SDK" ]; then
-            echo "ERROR: Android SDK directory not found."
+            echo "ERROR: Android SDK not found."
             exit 1
           fi
 
@@ -103,30 +99,42 @@ jobs:
               -type f -name sdkmanager -print | sort -V | tail -n 1)"
           fi
 
-          if [ -z "$SDKMANAGER" ] || [ ! -x "$SDKMANAGER" ]; then
+          if [ -z "${SDKMANAGER:-}" ] || [ ! -x "$SDKMANAGER" ]; then
             echo "ERROR: sdkmanager not found."
             exit 1
           fi
 
-          echo "Using: $SDKMANAGER"
+          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
+          echo "Using SDK Manager: $SDKMANAGER"
+
+      - name: Accept Android licenses
+        shell: bash
+        run: |
+          set -e
 
           set +o pipefail
-          yes | "$SDKMANAGER" --sdk_root="$SDK" --licenses
-          LICENSE_STATUS=$?
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses
+          RESULT=$?
           set -o pipefail
 
-          if [ "$LICENSE_STATUS" -ne 0 ]; then
-            echo "License command returned: $LICENSE_STATUS"
+          if [ "$RESULT" -ne 0 ]; then
+            echo "ERROR: Android license acceptance failed."
+            exit 1
           fi
 
-          "$SDKMANAGER" --sdk_root="$SDK" --install \
+      - name: Install Android build components
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install \
             "platform-tools" \
             "platforms;android-35" \
             "build-tools;35.0.0" \
             "cmake;3.22.1" \
             "ndk;27.0.12077973"
 
-      - name: Verify project configuration
+      - name: Verify project files
         shell: bash
         run: |
           set -euo pipefail
@@ -141,21 +149,17 @@ jobs:
 
           echo "Project files verified."
 
-          grep -n "compileSdk" app/build.gradle.kts
-          grep -n "version" app/build.gradle.kts
-
-      - name: Verify Java and Android tools
+      - name: Verify Android SDK
         shell: bash
         run: |
           set -euo pipefail
 
-          java -version
-          gradle --version
-          "$ANDROID_HOME/platform-tools/adb" version
-
           test -d "$ANDROID_HOME/platforms/android-35"
           test -d "$ANDROID_HOME/build-tools/35.0.0"
           test -d "$ANDROID_HOME/ndk/27.0.12077973"
+
+          java -version
+          gradle --version
 
       - name: Build Debug APK
         shell: bash
@@ -170,7 +174,7 @@ jobs:
             --warning-mode all \
             :app:assembleDebug
 
-      - name: Verify APK
+      - name: Verify APK output
         shell: bash
         run: |
           set -euo pipefail
@@ -178,17 +182,17 @@ jobs:
           APK="$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk"
 
           if [ ! -s "$APK" ]; then
-            echo "ERROR: APK was not generated."
+            echo "ERROR: APK file missing or empty."
             exit 1
           fi
 
           echo "APK successfully generated:"
           ls -lh "$APK"
 
-      - name: Upload APK artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: WORLD-AT-WAR-PORT-0.8.0-CINEMATIC-APK
+          name: WORLD-AT-WAR-PORT-1.0.0-APK
           path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
