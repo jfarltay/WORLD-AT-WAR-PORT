@@ -1,5 +1,5 @@
 
-name: WORLD AT WAR PORT APK
+name: WORLD AT WAR PORT - APK Builder
 
 on:
   workflow_dispatch:
@@ -10,71 +10,162 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: world-at-war-port-build
+  cancel-in-progress: true
+
 jobs:
   build:
     name: Build Android ARM64 APK
     runs-on: ubuntu-22.04
+    timeout-minutes: 45
 
     steps:
-      - name: Checkout Project
+      # 1. Download repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Extract Project ZIP
+      # 2. Find or extract Android project
+      - name: Prepare Project
+        shell: bash
         run: |
-          if [ ! -f "settings.gradle.kts" ] && [ ! -f "settings.gradle" ]; then
-            ZIP_FILE="$(find . -maxdepth 2 -type f -iname '*.zip' | head -n 1)"
-            if [ -z "$ZIP_FILE" ]; then
-              echo "ERROR: Project ZIP not found"
+          set -euo pipefail
+
+          PROJECT_DIR=""
+
+          # Check if Gradle project is already in repository root
+          if [ -f "settings.gradle.kts" ] || [ -f "settings.gradle" ]; then
+            PROJECT_DIR="."
+          else
+            mkdir -p extracted
+
+            # Find ZIP files
+            mapfile -t ZIP_FILES < <(
+              find . -maxdepth 3 -type f -iname "*.zip" \
+                ! -path "./.git/*" | sort
+            )
+
+            if [ "${#ZIP_FILES[@]}" -eq 0 ]; then
+              echo "ERROR: No project ZIP file found."
               exit 1
             fi
 
-            mkdir -p extracted
+            if [ "${#ZIP_FILES[@]}" -gt 1 ]; then
+              echo "ERROR: More than one ZIP file found."
+              echo "Keep only one project ZIP in the repository."
+              printf '%s\n' "${ZIP_FILES[@]}"
+              exit 1
+            fi
+
+            ZIP_FILE="${ZIP_FILES[0]}"
+            echo "Extracting: $ZIP_FILE"
+
             unzip -q "$ZIP_FILE" -d extracted
 
-            PROJECT_DIR="$(find extracted -type f \( -name settings.gradle.kts -o -name settings.gradle \) -print -quit | xargs -r dirname)"
+            # Locate Gradle project inside ZIP
+            SETTINGS_FILE="$(
+              find extracted -type f \
+                \( -name "settings.gradle.kts" \
+                -o -name "settings.gradle" \) \
+                -print -quit
+            )"
 
-            if [ -z "$PROJECT_DIR" ]; then
-              echo "ERROR: Gradle settings file not found inside ZIP"
+            if [ -z "$SETTINGS_FILE" ]; then
+              echo "ERROR: Gradle settings file not found."
               exit 1
             fi
 
-            cp -a "$PROJECT_DIR"/. .
+            PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
           fi
 
-          test -f settings.gradle.kts || test -f settings.gradle
+          # Validate project structure
+          if [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ] \
+            && [ ! -f "$PROJECT_DIR/app/build.gradle" ]; then
+            echo "ERROR: Android app Gradle file is missing."
+            exit 1
+          fi
 
-      - name: Setup Java 17
+          if [ ! -f "$PROJECT_DIR/app/src/main/AndroidManifest.xml" ]; then
+            echo "ERROR: AndroidManifest.xml is missing."
+            exit 1
+          fi
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Project directory: $PROJECT_DIR"
+
+      # 3. Install Java 17
+      - name: Setup Java
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
+          cache: gradle
 
+      # 4. Install Gradle 8.9
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
+      # 5. Setup Android SDK
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
-          packages: platform-tools
+          packages: |
+            platform-tools
+            platforms;android-35
+            build-tools;35.0.0
+            cmake;3.22.1
+            ndk;27.0.12077973
 
-      - name: Install Android Components
+      # 6. Accept Android licenses
+      - name: Accept Android Licenses
+        shell: bash
         run: |
-          yes | sdkmanager --licenses
-          sdkmanager --install \
-            "platform-tools" \
-            "platforms;android-35" \
-            "build-tools;35.0.0" \
-            "cmake;3.22.1" \
-            "ndk;27.0.12077973"
+          set -e
+          sdkmanager --licenses < <(yes)
 
+      # 7. Verify Android SDK packages
+      - name: Verify Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sdkmanager --list_installed
+
+          test -d "$ANDROID_HOME/platforms/android-35"
+          test -d "$ANDROID_HOME/build-tools/35.0.0"
+
+          echo "Android SDK verification successful."
+
+      # 8. Build ARM64 Debug APK
       - name: Build APK
-        run: gradle --no-daemon :app:assembleDebug
+        shell: bash
+        run: |
+          set -euo pipefail
 
-      - name: Upload APK
+          cd "$PROJECT_DIR"
+
+          gradle --no-daemon \
+            --stacktrace \
+            --warning-mode all \
+            :app:assembleDebug
+
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+
+          if [ ! -s "$APK" ]; then
+            echo "ERROR: APK was not generated."
+            exit 1
+          fi
+
+          echo "APK successfully generated."
+          ls -lh "$APK"
+
+      # 9. Upload APK
+      - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: WORLD-AT-WAR-PORT-APK
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: WORLD-AT-WAR-PORT-ARM64-APK
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+          retention-days: 14
