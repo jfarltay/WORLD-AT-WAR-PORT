@@ -34,10 +34,10 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Find and extract project ZIP
+      - name: Extract project ZIP
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
 
           mkdir -p extracted
 
@@ -51,80 +51,97 @@ jobs:
           fi
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: Project ZIP file was not found."
+            echo "Project ZIP not found"
             exit 1
           fi
 
-          echo "Found project archive: $ZIP_FILE"
           unzip -q "$ZIP_FILE" -d extracted
 
-          SETTINGS_FILE="$(find extracted -type f \
-            -name settings.gradle.kts -print -quit)"
+          SETTINGS="$(find extracted -type f \
+            \( -name settings.gradle -o -name settings.gradle.kts \) \
+            -print -quit)"
 
-          if [ -z "$SETTINGS_FILE" ]; then
-            SETTINGS_FILE="$(find extracted -type f \
-              -name settings.gradle -print -quit)"
-          fi
-
-          if [ -z "$SETTINGS_FILE" ]; then
-            echo "ERROR: Gradle settings file not found inside ZIP."
+          if [ -z "$SETTINGS" ]; then
+            echo "Gradle settings file not found in ZIP"
             find extracted -maxdepth 5 -type f
             exit 1
           fi
 
-          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
-
+          PROJECT_DIR="$(dirname "$SETTINGS")"
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Project directory: $PROJECT_DIR"
 
-      - name: Verify Android project
+      - name: Configure existing Android SDK
         shell: bash
         run: |
-          set -euo pipefail
-          cd "$PROJECT_DIR"
+          set -e
 
-          test -f settings.gradle.kts || test -f settings.gradle
-          test -f build.gradle.kts || test -f build.gradle
-          test -f app/build.gradle.kts || test -f app/build.gradle
-          test -f app/src/main/AndroidManifest.xml
+          SDK=/usr/local/lib/android/sdk
 
-          echo "Android project files verified."
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+          SDKMANAGER="$SDK/cmdline-tools/latest/bin/sdkmanager"
 
-      - name: Install Android SDK components
-        shell: bash
-        run: |
-          set -euo pipefail
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$SDK/cmdline-tools" \
+              -type f -name sdkmanager -print | sort -V | tail -n 1)"
+          fi
 
-          yes | sdkmanager --licenses
+          if [ -z "$SDKMANAGER" ] || [ ! -x "$SDKMANAGER" ]; then
+            echo "sdkmanager not found"
+            exit 1
+          fi
 
-          sdkmanager --install \
+          echo "Using SDK manager: $SDKMANAGER"
+
+          set +o pipefail
+          yes | "$SDKMANAGER" --sdk_root="$SDK" --licenses
+          set -o pipefail
+
+          "$SDKMANAGER" --sdk_root="$SDK" --install \
             "platform-tools" \
             "platforms;android-35" \
             "build-tools;35.0.0" \
             "cmake;3.22.1" \
             "ndk;27.0.12077973"
 
+      - name: Verify Android project
+        shell: bash
+        run: |
+          set -e
+          cd "$PROJECT_DIR"
+
+          test -f app/src/main/AndroidManifest.xml
+
+          if [ ! -f settings.gradle ] && [ ! -f settings.gradle.kts ]; then
+            echo "Gradle settings missing"
+            exit 1
+          fi
+
+          if [ ! -f app/build.gradle ] && [ ! -f app/build.gradle.kts ]; then
+            echo "App Gradle file missing"
+            exit 1
+          fi
+
+          echo "Project verification successful"
+
       - name: Build Debug APK
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
           cd "$PROJECT_DIR"
 
-          gradle --no-daemon --stacktrace \
-            :app:assembleDebug
+          gradle --no-daemon --stacktrace :app:assembleDebug
 
       - name: Verify APK
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
 
           APK="$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk"
 
           if [ ! -s "$APK" ]; then
-            echo "ERROR: APK was not generated."
+            echo "APK was not generated"
             exit 1
           fi
 
