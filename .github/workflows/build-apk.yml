@@ -1,5 +1,5 @@
 
-name: WORLD AT WAR PORT 1.0.0 - Android APK
+name: WORLD AT WAR PORT 1.0.1 - Build APK
 
 on:
   workflow_dispatch:
@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build WORLD AT WAR PORT
+    name: Build Android APK
     runs-on: ubuntu-22.04
     timeout-minutes: 45
 
@@ -44,24 +44,16 @@ jobs:
         run: |
           set -euo pipefail
 
-          mkdir -p "$GITHUB_WORKSPACE/extracted"
-
-          ZIP_FILE="$GITHUB_WORKSPACE/WORLD-AT-WAR-PORT-1.0.0.zip"
+          ZIP_FILE="$GITHUB_WORKSPACE/WORLD-AT-WAR-PORT-1.0.1-FIX-STARTUP.zip"
 
           if [ ! -f "$ZIP_FILE" ]; then
-            ZIP_FILE="$(find "$GITHUB_WORKSPACE" \
-              -maxdepth 3 \
-              -type f \
-              -iname '*.zip' \
-              -print -quit)"
-          fi
-
-          if [ -z "${ZIP_FILE:-}" ] || [ ! -f "$ZIP_FILE" ]; then
-            echo "ERROR: Project ZIP not found."
+            echo "ERROR: Required project ZIP was not found."
+            echo "Upload WORLD-AT-WAR-PORT-1.0.1-FIX-STARTUP.zip to the repository root."
             exit 1
           fi
 
-          echo "Extracting: $ZIP_FILE"
+          mkdir -p "$GITHUB_WORKSPACE/extracted"
+
           unzip -q "$ZIP_FILE" -d "$GITHUB_WORKSPACE/extracted"
 
           SETTINGS_FILE="$(find "$GITHUB_WORKSPACE/extracted" \
@@ -76,53 +68,49 @@ jobs:
           fi
 
           PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
-
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Project directory: $PROJECT_DIR"
 
-      - name: Locate Android SDK Manager
+          echo "Project found: $PROJECT_DIR"
+
+      - name: Verify Android SDK
         shell: bash
         run: |
           set -euo pipefail
 
-          SDK="$ANDROID_HOME"
-
-          if [ ! -d "$SDK" ]; then
-            echo "ERROR: Android SDK not found."
+          if [ ! -d "$ANDROID_HOME" ]; then
+            echo "ERROR: Android SDK directory not found."
             exit 1
           fi
 
-          SDKMANAGER="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
 
           if [ ! -x "$SDKMANAGER" ]; then
-            SDKMANAGER="$(find "$SDK/cmdline-tools" \
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" \
               -type f -name sdkmanager -print | sort -V | tail -n 1)"
           fi
 
           if [ -z "${SDKMANAGER:-}" ] || [ ! -x "$SDKMANAGER" ]; then
-            echo "ERROR: sdkmanager not found."
+            echo "ERROR: sdkmanager was not found."
             exit 1
           fi
 
           echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
-          echo "Using SDK Manager: $SDKMANAGER"
 
       - name: Accept Android licenses
         shell: bash
         run: |
           set -e
-
           set +o pipefail
-          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses
-          RESULT=$?
-          set -o pipefail
 
-          if [ "$RESULT" -ne 0 ]; then
-            echo "ERROR: Android license acceptance failed."
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses
+          STATUS=${PIPESTATUS[1]}
+
+          if [ "$STATUS" -ne 0 ]; then
+            echo "ERROR: Could not accept Android SDK licenses."
             exit 1
           fi
 
-      - name: Install Android build components
+      - name: Install Android SDK components
         shell: bash
         run: |
           set -euo pipefail
@@ -130,36 +118,33 @@ jobs:
           "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install \
             "platform-tools" \
             "platforms;android-35" \
-            "build-tools;35.0.0" \
-            "cmake;3.22.1" \
-            "ndk;27.0.12077973"
+            "build-tools;35.0.0"
 
-      - name: Verify project files
+      - name: Verify project configuration
         shell: bash
         run: |
           set -euo pipefail
 
           cd "$PROJECT_DIR"
 
-          test -f settings.gradle.kts || test -f settings.gradle
-          test -f build.gradle.kts || test -f build.gradle
-          test -f app/build.gradle.kts || test -f app/build.gradle
+          test -f settings.gradle.kts
+          test -f build.gradle.kts
+          test -f app/build.gradle.kts
           test -f app/src/main/AndroidManifest.xml
-          test -f app/src/main/cpp/CMakeLists.txt
+          test -f app/src/main/java/com/worldatwar/port/MainActivity.kt
 
-          echo "Project files verified."
+          echo "Project configuration verified."
 
-      - name: Verify Android SDK
+      - name: Verify Java and Android components
         shell: bash
         run: |
           set -euo pipefail
 
-          test -d "$ANDROID_HOME/platforms/android-35"
-          test -d "$ANDROID_HOME/build-tools/35.0.0"
-          test -d "$ANDROID_HOME/ndk/27.0.12077973"
-
           java -version
           gradle --version
+
+          test -d "$ANDROID_HOME/platforms/android-35"
+          test -d "$ANDROID_HOME/build-tools/35.0.0"
 
       - name: Build Debug APK
         shell: bash
@@ -174,7 +159,7 @@ jobs:
             --warning-mode all \
             :app:assembleDebug
 
-      - name: Verify APK output
+      - name: Verify APK
         shell: bash
         run: |
           set -euo pipefail
@@ -182,17 +167,20 @@ jobs:
           APK="$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk"
 
           if [ ! -s "$APK" ]; then
-            echo "ERROR: APK file missing or empty."
+            echo "ERROR: APK was not generated."
             exit 1
           fi
 
-          echo "APK successfully generated:"
-          ls -lh "$APK"
+          mkdir -p "$GITHUB_WORKSPACE/output"
+          cp "$APK" "$GITHUB_WORKSPACE/output/WORLD-AT-WAR-PORT-1.0.1.apk"
 
-      - name: Upload APK
+          ls -lh "$GITHUB_WORKSPACE/output/WORLD-AT-WAR-PORT-1.0.1.apk"
+
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: WORLD-AT-WAR-PORT-1.0.0-APK
-          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/app-debug.apk
+          name: WORLD-AT-WAR-PORT-1.0.1-APK
+          path: output/WORLD-AT-WAR-PORT-1.0.1.apk
           if-no-files-found: error
           retention-days: 14
+          
